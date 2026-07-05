@@ -466,7 +466,15 @@ impl<NoteRef> Step<NoteRef> {
         }
         for (idx, pool) in &payment_pools {
             if let Some(payment) = transaction_request.payments().get(idx) {
-                if !payment.recipient_address().can_receive_as(*pool) {
+                // Ironwood notes are Orchard-shaped and delivered to the recipient's Orchard
+                // receiver, so an Ironwood-pool payment is valid whenever the recipient can
+                // receive Orchard.
+                let deliverable = payment.recipient_address().can_receive_as(*pool)
+                    || (*pool == PoolType::IRONWOOD
+                        && payment
+                            .recipient_address()
+                            .can_receive_as(PoolType::ORCHARD));
+                if !deliverable {
                     return Err(ProposalError::PaymentPoolsMismatch);
                 }
                 if payment.amount().is_none() {

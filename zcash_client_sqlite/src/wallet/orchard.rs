@@ -1183,6 +1183,19 @@ pub(crate) mod tests {
             "change from an Ironwood spend must stay in the Ironwood pool"
         );
 
+        // The Orchard-receiver payment is represented in the proposal as an Ironwood-pool
+        // output, since Ironwood is active; a user inspecting the proposal sees the Ironwood
+        // output being created.
+        assert!(
+            proposal
+                .steps()
+                .last()
+                .payment_pools()
+                .values()
+                .all(|p| *p == zcash_protocol::PoolType::IRONWOOD),
+            "the Orchard-receiver payment must be represented as an Ironwood output"
+        );
+
         // A wallet application serializes the proposal to protobuf (e.g. to hand it across
         // FFI for review/signing) before creating the transaction. A proposal that spends
         // Ironwood notes must survive that round-trip.

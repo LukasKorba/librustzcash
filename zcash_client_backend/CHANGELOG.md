@@ -15,8 +15,9 @@ workspace.
   implementations select Ironwood notes when the Ironwood pool is active at the
   target height, the greedy input selector spends them (attributing each spent
   note to the Ironwood bundle for correct fee and action accounting), and the
-  transaction builder routes the Orchard-receiver outputs and change to the
-  Ironwood bundle. `zcash_client_backend::data_api::ReceivedNotes` gains an
+  proposal represents Orchard-receiver payments and Ironwood-spend change as
+  Ironwood-pool outputs that the transaction builder places in the Ironwood
+  bundle. `zcash_client_backend::data_api::ReceivedNotes` gains an
   `ironwood` accessor and `take_ironwood`/`ironwood_value` methods, and
   `NoteRetention` gains `should_retain_ironwood` (behind the `orchard` feature
   flag).
@@ -211,10 +212,12 @@ workspace.
   Orchard-pool change output into the Ironwood bundle when the builder will —
   from the same routing decision the transaction builder uses. Pass an empty
   view and `false` when nothing targets the Ironwood pool.
-- `zcash_client_backend::data_api::wallet::create_proposed_transactions` now
-  routes Orchard-recipient spends and outputs through the Ironwood transaction
-  builder when Ironwood is active, unless an explicit legacy V5 transaction is
-  requested.
+- Once Ironwood is active, input selection represents Orchard-receiver payments
+  and the change from Ironwood spends as Ironwood-pool outputs in the proposal
+  (each delivered to the recipient's Orchard receiver via the Ironwood bundle), so
+  that a proposal a user inspects reflects the Ironwood outputs being created.
+  `zcash_client_backend::data_api::wallet::create_proposed_transactions` builds
+  those outputs through the Ironwood transaction builder.
 - `zcash_client_backend::data_api::wallet::create_pczt_from_proposal` continues
   to use legacy Orchard routing for Orchard-recipient proposals until PCZT has
   Ironwood role support.

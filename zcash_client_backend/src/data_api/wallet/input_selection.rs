@@ -789,7 +789,17 @@ impl<DbT: InputSource> InputSelector for GreedyInputSelector<DbT> {
                 Address::Unified(addr) => {
                     #[cfg(feature = "orchard")]
                     if addr.has_orchard() && orchard_supported {
-                        payment_pools.insert(*idx, PoolType::ORCHARD);
+                        // Represent an Orchard-receiver payment as an Ironwood-pool output once
+                        // Ironwood is active (its value is accounted to the Ironwood bundle
+                        // below), and as an Orchard-pool output otherwise.
+                        payment_pools.insert(
+                            *idx,
+                            if ironwood_active_at(params, target_height) {
+                                PoolType::IRONWOOD
+                            } else {
+                                PoolType::ORCHARD
+                            },
+                        );
                         orchard_outputs.push(OrchardPayment(payment_amount));
                         continue;
                     }
@@ -1337,16 +1347,23 @@ where
 
     let use_sapling = !spendable_notes.sapling().is_empty() || sapling_output_count > 0;
 
-    // A payment to an Orchard receiver is represented in the proposal as an Orchard-pool output.
-    // When Ironwood is active the builder routes that output to the Ironwood bundle instead, so the
-    // per-bundle action counts reflect that split even though the payment pool stays `ORCHARD`.
+    // A payment to an Orchard receiver is represented in the proposal as an Ironwood-pool output
+    // once Ironwood is active (delivered to the Orchard receiver via the Ironwood bundle), and as
+    // an Orchard-pool output otherwise. The per-bundle action counts below reflect that split.
     #[cfg(feature = "orchard")]
     let recipient_wants_orchard = recipient.can_receive_as(PoolType::ORCHARD);
     #[cfg(feature = "orchard")]
     let route_orchard_output_to_ironwood = ironwood_active_at(params, target_height);
     #[cfg(feature = "orchard")]
     if recipient_wants_orchard {
-        payment_pools.insert(0, PoolType::ORCHARD);
+        payment_pools.insert(
+            0,
+            if route_orchard_output_to_ironwood {
+                PoolType::IRONWOOD
+            } else {
+                PoolType::ORCHARD
+            },
+        );
     }
 
     #[cfg(feature = "orchard")]

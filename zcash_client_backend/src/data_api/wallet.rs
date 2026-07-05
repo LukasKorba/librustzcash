@@ -1755,12 +1755,11 @@ where
                 }
                 #[cfg(feature = "orchard")]
                 PoolType::Shielded(ShieldedPool::Orchard) => {
+                    // Legacy Orchard payment (pre-NU6.3). Once Ironwood is active, input
+                    // selection assigns Orchard-receiver payments the Ironwood output pool
+                    // instead, so this arm always builds a plain Orchard output.
                     let to = *ua.orchard().expect("The mapping between payment pool and receiver is checked in step construction");
-                    if ironwood_active_at(params, min_target_height) {
-                        add_ironwood_output(&mut builder, &mut ironwood_output_meta, to)?;
-                    } else {
-                        add_orchard_output(&mut builder, &mut orchard_output_meta, to)?;
-                    }
+                    add_orchard_output(&mut builder, &mut orchard_output_meta, to)?;
                 }
                 PoolType::Shielded(ShieldedPool::Sapling) => {
                     let to = *ua.sapling().expect("The mapping between payment pool and receiver is checked in step construction");
@@ -1770,8 +1769,16 @@ where
                     let to = *ua.transparent().expect("The mapping between payment pool and receiver is checked in step construction");
                     add_transparent_output(&mut builder, &mut transparent_output_meta, to)?;
                 }
+                #[cfg(feature = "orchard")]
                 PoolType::Shielded(ShieldedPool::Ironwood) => {
-                    todo!("Ironwood pool support is not yet implemented")
+                    // Ironwood payment (post-NU6.3): delivered to the recipient's Orchard
+                    // receiver, but through the Ironwood bundle, a pool distinct from Orchard.
+                    let to = *ua.orchard().expect("The mapping between payment pool and receiver is checked in step construction");
+                    add_ironwood_output(&mut builder, &mut ironwood_output_meta, to)?;
+                }
+                #[cfg(not(feature = "orchard"))]
+                PoolType::Shielded(ShieldedPool::Ironwood) => {
+                    return Err(Error::ProposalNotSupported);
                 }
             },
             Address::Sapling(to) => {
