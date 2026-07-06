@@ -151,6 +151,11 @@ workspace.
 - `zcash_client_backend::proposal::ProposalError::ShieldingRequiresShieldedRecipient`,
   returned by `propose_shielding_coinbase` when the supplied `to_address` is
   a transparent or TEX address.
+- `zcash_client_backend::proposal::ProposalError::OrchardPoolValueCreation`
+  (behind the `orchard` feature flag), returned by proposal construction when a
+  step proposed for a post-NU6.3 target height would create value in the
+  Orchard pool: directing a payment to the Orchard pool, or returning as much
+  or more value to the pool as change than the step's Orchard inputs remove.
 - `zcash_client_backend::data_api::wallet::ProposeShieldingCoinbaseErrT` type
   alias, parallel to `ProposeShieldingErrT` but parameterized on a `FeeRule`
   instead of a `ChangeStrategy`.
@@ -265,9 +270,24 @@ workspace.
   - `Proposal::single_step` and `Step::from_parts` now take transparent inputs
     as `Vec<WalletTransparentOutput<()>>` (explicitly with no account ID), and
     take the step's anchor height as an explicit `BlockHeight` argument.
+  - `Proposal::single_step` and `Step::from_parts` also take an
+    `ironwood_active` flag (behind the `orchard` feature flag) indicating
+    whether the Ironwood pool is active at the target height; when set, the
+    step is validated against the Orchard turnstile (see
+    `ProposalError::OrchardPoolValueCreation`).
   - The shielded anchor height has moved from `ShieldedInputs` to `Step`:
     `Step::anchor_height` is new, `ShieldedInputs::from_parts` no longer takes an
     anchor height, and `ShieldedInputs::anchor_height` has been removed.
+- `zcash_client_backend::proto::proposal::Proposal::try_into_standard_proposal`
+  now takes the network parameters as an additional argument, in order to
+  validate decoded proposals against the Orchard turnstile when Ironwood is
+  active at the proposal's target height.
+- The change strategies in `zcash_client_backend::fees` now enforce the Orchard
+  turnstile when selecting the change pool for a proposal with a post-NU6.3
+  target height: change is directed to the Orchard pool only when the
+  transaction spends Orchard notes and strictly less value would return to the
+  pool than the notes remove; otherwise Orchard-pool change is directed to the
+  Ironwood pool.
 - `zcash_client_backend::data_api::wallet::propose_transfer` and
   `zcash_client_backend::data_api::wallet::input_selection::InputSelector::propose_transaction`
   now take an additional `&TransparentSpendPolicy` argument (behind the

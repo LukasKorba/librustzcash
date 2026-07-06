@@ -1085,6 +1085,8 @@ impl<DbT: InputSource> InputSelector for GreedyInputSelector<DbT> {
                         transparent_inputs,
                         transaction_request,
                         payment_pools,
+                        #[cfg(feature = "orchard")]
+                        ironwood_active_at(params, target_height),
                         #[cfg(feature = "transparent-inputs")]
                         ephemeral_output_value.zip(tr1_balance_opt).map(
                             |(ephemeral_output_value, tr1_balance)| EphemeralStepConfig {
@@ -1529,6 +1531,8 @@ where
         vec![],
         transaction_request,
         payment_pools,
+        #[cfg(feature = "orchard")]
+        ironwood_active_at(params, target_height),
         #[cfg(feature = "transparent-inputs")]
         ephemeral_output_value
             .zip(tr1_fee)
@@ -1561,6 +1565,7 @@ fn build_proposal<FeeRuleT: FeeRule + Clone, NoteRef>(
     transparent_inputs: Vec<WalletTransparentOutput<()>>,
     transaction_request: TransactionRequest,
     payment_pools: BTreeMap<usize, PoolType>,
+    #[cfg(feature = "orchard")] ironwood_active: bool,
     #[cfg(feature = "transparent-inputs")] ephemeral_step_opt: Option<EphemeralStepConfig>,
 ) -> Result<Proposal<FeeRuleT, NoteRef>, ProposalError> {
     #[cfg(feature = "transparent-inputs")]
@@ -1612,6 +1617,8 @@ fn build_proposal<FeeRuleT: FeeRule + Clone, NoteRef>(
             vec![],
             tr0_balance,
             false,
+            #[cfg(feature = "orchard")]
+            ironwood_active,
         )?);
 
         let tr1 =
@@ -1626,6 +1633,8 @@ fn build_proposal<FeeRuleT: FeeRule + Clone, NoteRef>(
             vec![ephemeral_stepoutput],
             tr1_balance,
             false,
+            #[cfg(feature = "orchard")]
+            ironwood_active,
         )?);
 
         return Proposal::multi_step(
@@ -1645,6 +1654,8 @@ fn build_proposal<FeeRuleT: FeeRule + Clone, NoteRef>(
         fee_rule.clone(),
         target_height,
         false,
+        #[cfg(feature = "orchard")]
+        ironwood_active,
     )
 }
 
@@ -1706,6 +1717,8 @@ impl<DbT: InputSource> ShieldingSelector for GreedyInputSelector<DbT> {
                 (*change_strategy.fee_rule()).clone(),
                 target_height,
                 true,
+                #[cfg(feature = "orchard")]
+                ironwood_active_at(params, target_height),
             )
             .map_err(InputSelectorError::Proposal)
         } else {
@@ -1862,6 +1875,8 @@ impl<DbT: InputSource> ShieldingSelector for GreedyInputSelector<DbT> {
             fee_rule.clone(),
             target_height,
             false,
+            #[cfg(feature = "orchard")]
+            ironwood_active_at(params, target_height),
         )
         .map_err(InputSelectorError::Proposal)
     }

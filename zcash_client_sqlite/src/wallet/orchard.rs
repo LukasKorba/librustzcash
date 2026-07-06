@@ -1202,7 +1202,7 @@ pub(crate) mod tests {
         let proposal_proto =
             zcash_client_backend::proto::proposal::Proposal::from_standard_proposal(&proposal);
         let roundtripped = proposal_proto
-            .try_into_standard_proposal(st.wallet())
+            .try_into_standard_proposal(st.network(), st.wallet())
             .expect("Ironwood proposal round-trips through protobuf");
         assert_eq!(roundtripped, proposal);
 
