@@ -255,11 +255,6 @@ pub(crate) fn single_pool_output_balance<P: consensus::Parameters, NoteRefT: Clo
     sapling: &impl sapling_fees::BundleView<NoteRefT>,
     #[cfg(feature = "orchard")] orchard: &impl orchard_fees::BundleView<NoteRefT>,
     #[cfg(feature = "orchard")] ironwood: &impl orchard_fees::BundleView<NoteRefT>,
-    // Whether Orchard-pool change is routed into the Ironwood bundle (the builder
-    // does this when Ironwood is active). Orchard-pool payment outputs are already
-    // routed into the `ironwood` view by the caller; this carries the same decision
-    // for the change output, which is computed here.
-    #[cfg(feature = "orchard")] orchard_change_to_ironwood: bool,
     change_memo: Option<&MemoBytes>,
     ephemeral_balance: Option<EphemeralBalance>,
 ) -> Result<TransactionBalance, ChangeError<E, NoteRefT>>
@@ -414,15 +409,6 @@ where
         }
     };
 
-    // When Ironwood is active, the builder routes Orchard-pool change into the
-    // Ironwood bundle (Orchard-pool payment outputs are already routed into the
-    // `ironwood` view by the caller). Mirror that here so the change output is
-    // counted in the same bundle the builder will place it in.
-    #[cfg(feature = "orchard")]
-    let route_change_to_ironwood = orchard_change_to_ironwood;
-    #[cfg(not(feature = "orchard"))]
-    let route_change_to_ironwood = false;
-
     let transparent_input_sizes = transparent_inputs
         .iter()
         .map(|i| i.serialized_size())
@@ -502,19 +488,8 @@ where
                         transparent_output_sizes.clone(),
                         sapling_input_count,
                         sapling_output_count(target_change_counts.sapling())?,
-                        orchard_action_count(if route_change_to_ironwood {
-                            0
-                        } else {
-                            target_change_counts.orchard()
-                        })?,
-                        ironwood_action_count(
-                            target_change_counts.ironwood()
-                                + if route_change_to_ironwood {
-                                    target_change_counts.orchard()
-                                } else {
-                                    0
-                                },
-                        )?,
+                        orchard_action_count(target_change_counts.orchard())?,
+                        ironwood_action_count(target_change_counts.ironwood())?,
                     )
                     .map_err(|fee_error| ChangeError::StrategyError(E::from(fee_error)))?,
             );
@@ -549,22 +524,16 @@ where
                         } else {
                             0
                         })?,
-                        orchard_action_count(
-                            if change_pool == ShieldedPool::Orchard && !route_change_to_ironwood {
-                                split_count
-                            } else {
-                                0
-                            },
-                        )?,
-                        ironwood_action_count(
-                            if (change_pool == ShieldedPool::Orchard && route_change_to_ironwood)
-                                || change_pool == ShieldedPool::Ironwood
-                            {
-                                split_count
-                            } else {
-                                0
-                            },
-                        )?,
+                        orchard_action_count(if change_pool == ShieldedPool::Orchard {
+                            split_count
+                        } else {
+                            0
+                        })?,
+                        ironwood_action_count(if change_pool == ShieldedPool::Ironwood {
+                            split_count
+                        } else {
+                            0
+                        })?,
                     )
                     .map_err(|fee_error| ChangeError::StrategyError(E::from(fee_error)))?
             } else {

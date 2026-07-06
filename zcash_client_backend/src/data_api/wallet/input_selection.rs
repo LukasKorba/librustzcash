@@ -967,8 +967,6 @@ impl<DbT: InputSource> InputSelector for GreedyInputSelector<DbT> {
                             &orchard_fees::EmptyBundleView,
                             #[cfg(feature = "orchard")]
                             &orchard_fees::EmptyBundleView,
-                            #[cfg(feature = "orchard")]
-                            false,
                             Some(EphemeralBalance::Input(Zatoshis::ZERO)),
                             &wallet_meta,
                         ) {
@@ -992,8 +990,6 @@ impl<DbT: InputSource> InputSelector for GreedyInputSelector<DbT> {
                         &orchard_fees::EmptyBundleView,
                         #[cfg(feature = "orchard")]
                         &orchard_fees::EmptyBundleView,
-                        #[cfg(feature = "orchard")]
-                        false,
                         Some(EphemeralBalance::Input(tr1_required_input_value)),
                         &wallet_meta,
                     )?;
@@ -1062,9 +1058,6 @@ impl<DbT: InputSource> InputSelector for GreedyInputSelector<DbT> {
                 &orchard_view,
                 #[cfg(feature = "orchard")]
                 &ironwood_view,
-                // TODO: do we want to allow routing of orchard change to ironwood?
-                #[cfg(feature = "orchard")]
-                false,
                 ephemeral_output_value.map(EphemeralBalance::Output),
                 &wallet_meta,
             );
@@ -2084,8 +2077,6 @@ where
         &orchard_fees::EmptyBundleView,
         #[cfg(feature = "orchard")]
         &orchard_fees::EmptyBundleView,
-        #[cfg(feature = "orchard")]
-        false,
         None,
         wallet_meta,
     )
