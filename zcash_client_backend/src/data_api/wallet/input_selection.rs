@@ -876,20 +876,59 @@ impl<DbT: InputSource> InputSelector for GreedyInputSelector<DbT> {
             let use_sapling = true;
             #[cfg(feature = "orchard")]
             let (use_sapling, use_orchard, use_ironwood) = {
-                // The selection step below never mixes Orchard inputs with Sapling or Ironwood
-                // inputs: it selects either the Orchard group or the Sapling+Ironwood group.
-                // Spending Orchard is a migration that drains the legacy pool, so it must be a pure
-                // Orchard-input transaction; Sapling and Ironwood inputs may be combined. The
-                // presence of any selected Orchard note therefore means the Orchard group was
-                // chosen; otherwise the Sapling and Ironwood notes are spent. If neither group can
-                // cover the amount, the loop reports insufficient funds rather than combining
-                // Orchard with another pool: the API user must first move the Orchard funds out (to
-                // Sapling or Ironwood) in a separate transaction.
-                if shielded_inputs.orchard().is_empty() {
-                    (true, false, true)
+                // Trim the selected notes to the pools that are actually needed: the first
+                // pool (in preference order) whose selected notes cover the required amount
+                // is spent alone; otherwise pools are accumulated in preference order until
+                // the running total covers the amount, or all pools are in use. The
+                // preference order puts the pool matching the payment's outputs first — the
+                // Ironwood-bundle pools (Ironwood itself, then Orchard, whose payments are
+                // routed to the Ironwood bundle) for an Orchard-family payment, and Sapling
+                // otherwise — so that single-pool coverage avoids unnecessary pool
+                // crossings, and the legacy Orchard pool is drawn upon last elsewhere.
+                let pool_values = [
+                    (ShieldedPool::Sapling, shielded_inputs.sapling_value()?),
+                    (ShieldedPool::Orchard, shielded_inputs.orchard_value()?),
+                    (ShieldedPool::Ironwood, shielded_inputs.ironwood_value()?),
+                ];
+                let value_of = |pool: ShieldedPool| {
+                    pool_values
+                        .iter()
+                        .find(|(p, _)| *p == pool)
+                        .map(|(_, v)| *v)
+                        .expect("all shielded pools are present in pool_values")
+                };
+
+                let preference = selectable_pool_preference(
+                    params,
+                    target_height,
+                    sapling_supported,
+                    orchard_supported,
+                    !orchard_outputs.is_empty(),
+                );
+
+                let use_pools: Vec<ShieldedPool> = if let Some(single) =
+                    preference.iter().find(|p| value_of(**p) >= amount_required)
+                {
+                    vec![*single]
                 } else {
-                    (false, true, false)
-                }
+                    let mut running = Zatoshis::ZERO;
+                    let mut used = vec![];
+                    for pool in &preference {
+                        if running >= amount_required {
+                            break;
+                        }
+                        running = (running + value_of(*pool))
+                            .ok_or(GreedyInputSelectorError::Balance(BalanceError::Overflow))?;
+                        used.push(*pool);
+                    }
+                    used
+                };
+
+                (
+                    use_pools.contains(&ShieldedPool::Sapling),
+                    use_pools.contains(&ShieldedPool::Orchard),
+                    use_pools.contains(&ShieldedPool::Ironwood),
+                )
             };
 
             let sapling_inputs = if use_sapling {
@@ -913,9 +952,8 @@ impl<DbT: InputSource> InputSelector for GreedyInputSelector<DbT> {
                 vec![]
             };
 
-            // Ironwood inputs are selected only when the Ironwood pool was chosen (never together
-            // with Orchard inputs), and are attributed to the Ironwood bundle for action-count and
-            // fee purposes.
+            // Ironwood inputs are attributed to the Ironwood bundle for action-count and fee
+            // purposes.
             #[cfg(feature = "orchard")]
             let ironwood_inputs = if use_ironwood {
                 shielded_inputs
@@ -1164,92 +1202,41 @@ impl<DbT: InputSource> InputSelector for GreedyInputSelector<DbT> {
                 Err(other) => return Err(InputSelectorError::Change(other)),
             }
 
-            // Orchard inputs are never combined with Sapling or Ironwood, but Sapling and Ironwood
-            // may be combined, so we select from one of two mutually-exclusive input groups: the
-            // Orchard group alone, or the Sapling+Ironwood group. Prefer the Orchard group when its
-            // notes reach the required amount (draining the legacy pool as users migrate to
-            // Ironwood); otherwise use the Sapling+Ironwood group when it reaches the amount. If
-            // neither group can cover the amount, keep whichever group holds the greater value so
-            // the loop reports an accurate insufficient-funds error against a single group (Orchard
-            // is never combined with another pool to make up the difference).
-            let sapling_ironwood_pools = {
-                let mut pools = vec![];
-                if sapling_supported {
-                    pools.push(ShieldedPool::Sapling);
-                }
-                // Ironwood notes can be spent once the Ironwood pool is active at the target
-                // height, and may be combined with Sapling inputs.
+            // Select from every pool that is spendable at the target height; the
+            // pool-usage trimming at the top of the loop decides which of the selected
+            // notes are actually spent. The turnstile constraint on post-Ironwood Orchard
+            // spends is enforced by the change strategy and by proposal validation, so no
+            // structural restriction on combining pools is needed here.
+            let selectable_pools = {
                 #[cfg(feature = "orchard")]
-                if orchard_supported && super::ironwood_active_at(params, target_height) {
-                    pools.push(ShieldedPool::Ironwood);
+                {
+                    selectable_pool_preference(
+                        params,
+                        target_height,
+                        sapling_supported,
+                        orchard_supported,
+                        !orchard_outputs.is_empty(),
+                    )
                 }
-                pools
+                #[cfg(not(feature = "orchard"))]
+                {
+                    let mut pools = vec![];
+                    if sapling_supported {
+                        pools.push(ShieldedPool::Sapling);
+                    }
+                    pools
+                }
             };
-            let sapling_ironwood = wallet_db
+            shielded_inputs = wallet_db
                 .select_spendable_notes(
                     account,
                     TargetValue::AtLeast(amount_required),
-                    &sapling_ironwood_pools,
+                    &selectable_pools,
                     target_height,
                     confirmations_policy,
                     &exclude,
                 )
                 .map_err(InputSelectorError::DataSource)?;
-
-            #[cfg(feature = "orchard")]
-            {
-                let orchard = if orchard_supported {
-                    Some(
-                        wallet_db
-                            .select_spendable_notes(
-                                account,
-                                TargetValue::AtLeast(amount_required),
-                                &[ShieldedPool::Orchard],
-                                target_height,
-                                confirmations_policy,
-                                &exclude,
-                            )
-                            .map_err(InputSelectorError::DataSource)?,
-                    )
-                } else {
-                    None
-                };
-
-                shielded_inputs = match orchard {
-                    Some(orchard) => {
-                        let orchard_value = orchard.total_value()?;
-                        let sapling_ironwood_value = sapling_ironwood.total_value()?;
-                        let orchard_covers = orchard_value >= amount_required;
-                        let sapling_ironwood_covers = sapling_ironwood_value >= amount_required;
-                        // Prefer the input group that matches the payment's pool, to avoid an
-                        // unnecessary cross-pool (turnstile) output: spend the Orchard group when
-                        // the payment targets an Orchard receiver, otherwise spend the
-                        // Sapling+Ironwood group. Fall back to the other group when the preferred
-                        // one cannot cover the amount, and to the larger group when neither covers
-                        // (so the insufficient-funds error is accurate). Orchard is never combined
-                        // with Sapling or Ironwood to make up a shortfall.
-                        let prefer_orchard = !orchard_outputs.is_empty();
-                        if prefer_orchard && orchard_covers {
-                            orchard
-                        } else if !prefer_orchard && sapling_ironwood_covers {
-                            sapling_ironwood
-                        } else if orchard_covers {
-                            orchard
-                        } else if sapling_ironwood_covers {
-                            sapling_ironwood
-                        } else if orchard_value >= sapling_ironwood_value {
-                            orchard
-                        } else {
-                            sapling_ironwood
-                        }
-                    }
-                    None => sapling_ironwood,
-                };
-            }
-            #[cfg(not(feature = "orchard"))]
-            {
-                shielded_inputs = sapling_ironwood;
-            }
 
             let new_available = shielded_inputs.total_value()?;
             if new_available <= prior_available && !transparent_inputs_changed {
@@ -1265,6 +1252,49 @@ impl<DbT: InputSource> InputSelector for GreedyInputSelector<DbT> {
             }
         }
     }
+}
+
+/// Returns the shielded pools from which the greedy input selector may spend at the
+/// given target height, in preference order.
+///
+/// The pool family matching the payment's outputs comes first, so that single-pool
+/// coverage avoids unnecessary pool crossings: for an Orchard-family payment this is
+/// Ironwood (when active) and then Orchard — an Orchard-receiver payment is delivered
+/// via the Ironwood bundle once Ironwood is active — and for other payments it is
+/// Sapling. The legacy Orchard pool comes last otherwise, so that it is drawn upon
+/// only when the more current pools cannot cover the required amount.
+#[cfg(feature = "orchard")]
+fn selectable_pool_preference<ParamsT: consensus::Parameters>(
+    params: &ParamsT,
+    target_height: TargetHeight,
+    sapling_supported: bool,
+    orchard_supported: bool,
+    prefer_orchard_family: bool,
+) -> Vec<ShieldedPool> {
+    let ironwood_selectable = orchard_supported && ironwood_active_at(params, target_height);
+    let mut preference = Vec::with_capacity(3);
+    if prefer_orchard_family {
+        if ironwood_selectable {
+            preference.push(ShieldedPool::Ironwood);
+        }
+        if orchard_supported {
+            preference.push(ShieldedPool::Orchard);
+        }
+        if sapling_supported {
+            preference.push(ShieldedPool::Sapling);
+        }
+    } else {
+        if sapling_supported {
+            preference.push(ShieldedPool::Sapling);
+        }
+        if ironwood_selectable {
+            preference.push(ShieldedPool::Ironwood);
+        }
+        if orchard_supported {
+            preference.push(ShieldedPool::Orchard);
+        }
+    }
+    preference
 }
 
 /// Returns the Orchard bundle version whose action-count policy applies to

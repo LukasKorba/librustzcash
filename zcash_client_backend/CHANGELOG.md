@@ -21,12 +21,15 @@ workspace.
   `ironwood` accessor and `take_ironwood`/`ironwood_value` methods, and
   `NoteRetention` gains `should_retain_ironwood` (behind the `orchard` feature
   flag).
-- The greedy input selector now selects shielded inputs from a single pool group:
-  either Orchard alone, or Sapling and Ironwood together, never combining Orchard
-  with Sapling or Ironwood. This keeps a spend of legacy Orchard funds to a pure
-  Orchard-input transaction. It prefers the input group matching the payment's
-  receiver to avoid an unnecessary cross-pool output, and a transfer that would
-  require Orchard combined with another pool fails as insufficient funds.
+- The greedy input selector may combine shielded inputs from any of the pools
+  that are spendable at the target height (Sapling and Orchard, plus Ironwood
+  once it is active). It spends from a single pool when one can cover the
+  required amount by itself — preferring the pool matching the payment's
+  outputs, to avoid unnecessary pool crossings — and otherwise accumulates
+  pools in preference order, drawing upon the legacy Orchard pool last. The
+  Orchard turnstile (see `ProposalError::OrchardPoolValueCreation`) is enforced
+  by the change strategies and by proposal validation rather than by
+  restricting input selection.
 - `zcash_client_backend::wallet::Note::pool`, which returns the shielded value
   pool (`Sapling`, `Orchard`, or `Ironwood`) to which a note belongs, classifying
   version-3 Orchard notes as belonging to the Ironwood pool. This replaces the

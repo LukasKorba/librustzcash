@@ -1513,8 +1513,9 @@ pub(crate) mod tests {
         }
 
         // A single-output ZIP 317 change strategy. Its nominal change pool is Orchard, but once
-        // Ironwood is active any Orchard-pool change is routed into the Ironwood bundle (the
-        // Orchard V3 bundle forbids cross-address outputs, so change cannot stay in it).
+        // Ironwood is active the change strategy observes the Orchard turnstile: change goes to
+        // Orchard only when Orchard notes are spent and strictly less value returns to the pool
+        // than the notes remove; otherwise Orchard-preferred change flows onward to Ironwood.
         fn orchard_change_strategy() -> standard::SingleOutputChangeStrategy<TestDb> {
             standard::SingleOutputChangeStrategy::new(
                 StandardFeeRule::Zip317,
@@ -1592,13 +1593,11 @@ pub(crate) mod tests {
         proptest! {
             #![proptest_config(ProptestConfig::with_cases(8))]
 
-            /// Rule 1: Orchard inputs are never combined with Sapling or Ironwood inputs. The wallet
-            /// holds notes in all three pools; whenever an Orchard note is spent, no Sapling or
-            /// Ironwood note is spent in the same transaction. (When the Orchard note alone covers
-            /// the amount it is preferred, draining the legacy pool; otherwise the Sapling+Ironwood
-            /// group funds the payment and no Orchard note is touched.)
+            /// A payment to an Orchard receiver is funded from the Ironwood pool when an Ironwood
+            /// note can cover it alone: the pool matching the payment's (Ironwood-routed) output
+            /// is preferred, and the other pools are left untouched.
             #[test]
-            fn orchard_inputs_are_never_combined_with_sapling_or_ironwood(
+            fn orchard_family_payment_prefers_ironwood_inputs(
                 (orchard_zats, payment_zats) in arb_mixed_pool_amounts(),
             ) {
                 let mut st = TestBuilder::new()
@@ -1650,22 +1649,20 @@ pub(crate) mod tests {
 
                 let (sapling, orchard, ironwood) = input_pool_counts(&proposal);
                 prop_assert!(
-                    sapling + orchard + ironwood > 0,
-                    "the transaction must spend some notes"
+                    ironwood > 0,
+                    "the Ironwood note must fund the payment"
                 );
-                // Orchard is never combined with Sapling or Ironwood.
-                if orchard > 0 {
-                    prop_assert_eq!(
-                        (sapling, ironwood),
-                        (0, 0),
-                        "Orchard inputs must not be combined with Sapling ({}) or Ironwood ({})",
-                        sapling,
-                        ironwood,
-                    );
-                }
+                prop_assert_eq!(
+                    (sapling, orchard),
+                    (0, 0),
+                    "the Ironwood note covers the payment alone; Sapling ({}) and Orchard ({}) \
+                     notes must be left untouched",
+                    sapling,
+                    orchard,
+                );
             }
 
-            /// Rule 2: Sapling and Ironwood inputs may be combined. The wallet holds only a Sapling
+            /// Sapling and Ironwood inputs may be combined. The wallet holds only a Sapling
             /// note and an Ironwood note, each too small to fund the payment alone; the transaction
             /// spends both, and no Orchard note is involved.
             #[test]
@@ -1721,12 +1718,13 @@ pub(crate) mod tests {
                 );
             }
 
-            /// Rule 3: an amount that would require Orchard PLUS another pool must fail. The wallet
-            /// holds an Orchard note and a Sapling note, each too small to fund the payment alone;
-            /// since Orchard cannot be combined with Sapling, input selection reports insufficient
-            /// funds rather than spending both.
+            /// An amount that no single pool can cover is funded by combining pools — including
+            /// the legacy Orchard pool. The wallet holds an Orchard note and a Sapling note, each
+            /// too small to fund the payment alone; the transaction spends both, observes the
+            /// turnstile (strictly less value returns to the Orchard pool as change than the
+            /// Orchard inputs remove from it), and builds successfully.
             #[test]
-            fn orchard_plus_another_pool_is_insufficient(
+            fn orchard_combines_with_other_pools_within_turnstile(
                 (pool_zats, payment_zats) in arb_combined_amounts(),
             ) {
                 let mut st = TestBuilder::new()
@@ -1759,21 +1757,145 @@ pub(crate) mod tests {
                 let request = orchard_payment_request(st.network(), payment_zats);
                 let change_strategy = orchard_change_strategy();
                 let input_selector = GreedyInputSelector::new();
-                let result = st.propose_transfer(
-                    account_id,
-                    &input_selector,
-                    &change_strategy,
-                    request,
-                    ConfirmationsPolicy::MIN,
-                );
+                let proposal = st
+                    .propose_transfer(
+                        account_id,
+                        &input_selector,
+                        &change_strategy,
+                        request,
+                        ConfirmationsPolicy::MIN,
+                    )
+                    .unwrap();
 
-                let err = result.expect_err(
-                    "spending must fail: Orchard cannot be combined with Sapling to reach the amount",
+                let (sapling, orchard, ironwood) = input_pool_counts(&proposal);
+                prop_assert!(
+                    orchard > 0 && sapling > 0,
+                    "the payment requires combining the Orchard note ({orchard}) with the \
+                     Sapling note ({sapling})",
+                );
+                prop_assert_eq!(ironwood, 0, "no Ironwood note is present to spend");
+
+                // Every step observes the turnstile: strictly less value returns to the Orchard
+                // pool as change than the step's Orchard inputs remove from it. (Proposal
+                // construction validates this; the check here guards against the selector and
+                // that validation drifting apart.)
+                for step in proposal.steps() {
+                    let orchard_in = step
+                        .shielded_inputs()
+                        .iter()
+                        .flat_map(|s_in| s_in.notes().iter())
+                        .filter(|n| n.note().pool() == ShieldedPool::Orchard)
+                        .map(|n| n.note().value())
+                        .try_fold(Zatoshis::ZERO, |acc, v| acc + v)
+                        .unwrap();
+                    let orchard_change = step
+                        .balance()
+                        .proposed_change()
+                        .iter()
+                        .filter(|c| c.output_pool() == PoolType::ORCHARD)
+                        .map(|c| c.value())
+                        .try_fold(Zatoshis::ZERO, |acc, v| acc + v)
+                        .unwrap();
+                    if orchard_change.into_u64() > 0 {
+                        prop_assert!(
+                            orchard_change < orchard_in,
+                            "Orchard change {:?} must be strictly less than the Orchard input \
+                             total {:?}",
+                            orchard_change,
+                            orchard_in,
+                        );
+                    }
+                }
+
+                // The mixed-pool transaction builds: the same-address Orchard change output is
+                // anchored by the transaction's real Orchard spend.
+                let created = st
+                    .create_proposed_transactions::<Infallible, _, Infallible, _>(
+                        account.usk(),
+                        OvkPolicy::Sender,
+                        &proposal,
+                    )
+                    .unwrap();
+                prop_assert_eq!(created.len(), 1);
+            }
+
+            /// Orchard and Ironwood inputs may be combined in a single transaction, with both
+            /// Orchard-family bundles carrying spends: the Orchard bundle carries the legacy
+            /// spend and its same-address change, and the Ironwood bundle carries the Ironwood
+            /// spend and the routed payment output.
+            #[test]
+            fn orchard_and_ironwood_inputs_combine_and_build(
+                (pool_zats, payment_zats) in arb_combined_amounts(),
+            ) {
+                let mut st = TestBuilder::new()
+                    .with_network(ironwood_active_network())
+                    .with_data_store_factory(TestDbFactory::default())
+                    .with_block_cache(BlockCache::new())
+                    .with_account_from_sapling_activation(BlockHash([0; 32]))
+                    .build();
+
+                let account = st.test_account().cloned().unwrap();
+                let account_id = account.id();
+
+                let (h, _, _) = st.generate_next_block(
+                    &OrchardPoolTester::test_account_fvk(&st),
+                    AddressType::DefaultExternal,
+                    Zatoshis::from_u64(pool_zats).unwrap(),
+                );
+                st.generate_next_block(
+                    &IronwoodFvk(OrchardPoolTester::test_account_fvk(&st)),
+                    AddressType::DefaultExternal,
+                    Zatoshis::from_u64(pool_zats).unwrap(),
+                );
+                st.scan_cached_blocks(h, 2);
+
+                for _ in 0..5 {
+                    let (h, _) = st.generate_empty_block();
+                    st.scan_cached_blocks(h, 1);
+                }
+
+                let request = orchard_payment_request(st.network(), payment_zats);
+                let change_strategy = orchard_change_strategy();
+                let input_selector = GreedyInputSelector::new();
+                let proposal = st
+                    .propose_transfer(
+                        account_id,
+                        &input_selector,
+                        &change_strategy,
+                        request,
+                        ConfirmationsPolicy::MIN,
+                    )
+                    .unwrap();
+
+                let (sapling, orchard, ironwood) = input_pool_counts(&proposal);
+                prop_assert!(
+                    orchard > 0 && ironwood > 0,
+                    "the payment requires combining the Orchard note ({orchard}) with the \
+                     Ironwood note ({ironwood})",
+                );
+                prop_assert_eq!(sapling, 0, "no Sapling note is present to spend");
+
+                let created = st
+                    .create_proposed_transactions::<Infallible, _, Infallible, _>(
+                        account.usk(),
+                        OvkPolicy::Sender,
+                        &proposal,
+                    )
+                    .unwrap();
+                prop_assert_eq!(created.len(), 1);
+
+                let tx = st
+                    .wallet()
+                    .get_transaction(created[0])
+                    .unwrap()
+                    .expect("the sent transaction was stored");
+                prop_assert!(
+                    tx.orchard_bundle().is_some(),
+                    "the Orchard spend must be carried by the Orchard bundle",
                 );
                 prop_assert!(
-                    format!("{err:?}").contains("InsufficientFunds"),
-                    "expected an InsufficientFunds error, got: {:?}",
-                    err,
+                    tx.ironwood_bundle().is_some(),
+                    "the Ironwood spend and routed payment must be carried by the Ironwood bundle",
                 );
             }
         }
