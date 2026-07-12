@@ -11,8 +11,10 @@ workspace.
 ## [0.8.0] - PLANNED
 
 ### Changed
-- Migrated to `zcash_protocol 0.10.0-pre.0`, `zcash_transparent 0.9.0-pre.0`,
-  `zcash_primitives 0.29.0-pre.0`, `zcash_proofs 0.29.0-pre.0`.
+- MSRV is now 1.88
+- Migrated to `zcash_protocol 0.10.0`, `zcash_transparent 0.9.0`,
+  `zcash_primitives 0.29.0`, `zcash_proofs 0.29.0`
+  `orchard 0.15`, `shardtree 0.7`.
 - The empty states of the transparent, Sapling, Orchard, and Ironwood bundles
   now have a single canonical representation, produced consistently by the
   Creator, `Creator::build_from_parts`, the serialization formats, and the IO
@@ -46,6 +48,12 @@ workspace.
 - `pczt::roles::creator::Creator::new` is now fallible, returning
   `Result<Self, pczt::roles::creator::Error>`; it rejects unrecognized consensus
   branch IDs and upgrades that predate the v5 transaction format.
+- `pczt::roles::creator::Creator::new` now takes optional Sapling and Orchard
+  anchors. These may be [`None`] for v6 transactions, but v5 transactions still
+  require an anchor for each corresponding non-empty shielded bundle when the
+  PCZT is built.
+- `pczt::roles::creator::Creator::build` is now fallible, returning
+  `Result<Pczt, pczt::roles::creator::Error>`.
 - `pczt::roles::creator::Creator::with_orchard_flags` is now fallible, returning
   `Result<Self, pczt::roles::creator::Error>`. The Orchard bundle version (and
   hence the note-plaintext version and flag-byte encoding) is now derived from the
@@ -58,9 +66,11 @@ workspace.
 - PCZT version 2 serialization now omits empty Transparent, Sapling, and
   Orchard bundles.
 - The Orchard PCZT logical model now represents the bundle anchor and per-action
-  `cv_net` as optional fields, matching the version 2 encoding. Parsing resolves
-  absent `cv_net` values from the note values and `rcv`; absent anchors remain
-  absent until another PCZT copy or caller restores them.
+  `cv_net` as optional fields, matching the version 2 encoding. The logical
+  Orchard output model now similarly represents `cmx` as optional. Parsing
+  resolves absent `cv_net` values from the note values and `rcv`, and absent
+  `cmx` values from the output note fields and action spend nullifier; absent
+  anchors remain absent until another PCZT copy or caller restores them.
 - The logical Orchard output model now represents its encrypted note plaintext
   as `pczt::orchard::EncCiphertext`, allowing v2 serialization to carry either
   encrypted ciphertext or a trailing-zero-stripped
@@ -86,6 +96,8 @@ workspace.
 ### Added
 - `pczt::roles::creator::Error`, the error type returned by the now-fallible
   `Creator` methods.
+- `pczt::roles::creator::Error::AnchorRequiredForV5`, returned when building a
+  v5 PCZT with a non-empty shielded bundle whose anchor is missing.
 - `pczt::parse`, a free function for parsing PCZT encodings.
 - `pczt::EncodingError`, for errors that can occur during PCZT encoding.
 - `pczt::EncodingError::UnsupportedOrchardNoteVersion`, returned when an
@@ -103,6 +115,7 @@ workspace.
   `pczt::roles::redactor::orchard::ActionRedactor::replace_enc_ciphertext_with_memo_plaintext`.
 - `pczt::roles::redactor::orchard::OrchardRedactor::clear_anchor` and
   `pczt::roles::redactor::orchard::ActionRedactor::clear_cv_net`.
+- `pczt::roles::redactor::orchard::ActionRedactor::clear_cmx`.
 - `pczt::v1`, a module providing the version 1 PCZT serialization format via
   `pczt::v1::Pczt`.
 - PCZT version 2 serialization, which encodes the Orchard note plaintext
@@ -118,8 +131,27 @@ workspace.
 - `pczt::roles::creator::Creator::{with_ironwood_anchor, with_ironwood_flags}`
 - `pczt::roles::signer::Signer::{sign_ironwood, apply_ironwood_signature}`
 - `pczt::roles::signer::Error::{IronwoodSign, IronwoodVerify}`
+- `pczt::roles::signer::SpendAuthSignature`,
+  `pczt::roles::signer::extract_orchard_spend_auth_signatures`, and
+  `pczt::roles::signer::Signer::apply_orchard_spend_auth_signature` for transporting
+  Orchard and Ironwood spend authorization signatures separately from a PCZT.
+- `pczt::roles::signer::batch` request and response types for transporting batches
+  of PCZTs to an external signer and returning their Orchard and Ironwood spend
+  authorization signatures. Sapling spend authorization signatures are not represented.
+  Requests expose logical `Pczt` values, and both directions preserve request order in a
+  magic-prefixed, versioned Postcard wire format. A request carries one shared PCZT wire
+  version followed by headerless PCZT payloads. Request and response correlation is left
+  to the application transport.
 - `pczt::roles::verifier::Verifier::with_ironwood`
 - `pczt::roles::updater::Updater::update_ironwood_with`
+- `pczt::roles::updater::AnchorUpdateError` and
+  `pczt::roles::updater::Updater::{set_sapling_anchor, set_orchard_anchor,
+  set_ironwood_anchor}` for wallets that need to restore shielded anchors after
+  signing.
+- `pczt::roles::updater::Updater::{set_sapling_spend_witnesses,
+  set_orchard_spend_witnesses, set_ironwood_spend_witnesses}` for restoring
+  shielded spend witnesses before proof creation.
+- `pczt::roles::updater::SpendWitnessUpdateError`
 - `pczt::roles::creator::Error::IronwoodNotSupported`
 - `pczt::roles::low_level_signer::OrchardParseError`
 - `UnsupportedConsensusBranchId` variants of `pczt::roles::updater::OrchardError`,

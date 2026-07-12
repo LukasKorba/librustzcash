@@ -11,6 +11,20 @@ workspace.
 ## Unreleased
 
 ### Added
+- `WalletDb` implements the new
+  `WalletWrite::import_standalone_transparent_pubkeys` batch method (behind the
+  `transparent-key-import` feature flag), resolving the target account a single
+  time for the whole batch.
+- `WalletDb` now implements the new
+  `WalletWrite::reserve_next_n_internal_addresses` method (behind the
+  `transparent-inputs` feature flag), reserving internal-scope (change)
+  transparent addresses subject to the internal-scope gap limit. This is used
+  to allocate recipient addresses for non-ephemeral transparent change
+  outputs when a change strategy is configured with
+  `zcash_client_backend::fees::TransparentChangePolicy::TransparentChangeAllowed`.
+  No new migration is required: internal-scope gap addresses are already
+  generated at account creation, and received transparent change outputs are
+  recorded via the existing `Recipient::InternalTransparent` handling.
 - A new migration adds a `note_version` column to `orchard_received_notes`,
   recording the note plaintext version from which each received note was
   obtained. The Orchard note encryption domain accepts only version 2 note
@@ -80,11 +94,16 @@ workspace.
 - `zcash_client_sqlite::error::SqliteClientError::FeeRuleError`, a new variant
   (behind the `transparent-inputs` feature flag) that wraps an error produced
   by a `FeeRule` during transparent input selection.
+- `WalletDb::generate_ironwood_witnesses_at_historical_height`, which mirrors
+  the existing Orchard historical witness helper over the wallet's Ironwood
+  commitment tree shard tables.
 
 ### Changed
-- Migrated to `zcash_protocol 0.10.0-pre.0`, `zcash_address 0.13.0-pre.0`,
-  `zcash_transparent 0.9.0-pre.0`, `zcash_keys 0.15.0-pre.0`,
-  `zcash_primitives 0.29.0-pre.0`, `zcash_proofs 0.29.0-pre.0`.
+- MSRV is now 1.88
+- Migrated to `zcash_protocol 0.10.0`, `zcash_address 0.13.0`,
+  `zcash_transparent 0.9.0`, `zcash_keys 0.15.0`,
+  `zcash_primitives 0.29.0`, `zcash_proofs 0.29.0`,
+  `orchard 0.15`, `shardtree 0.7`.
 - (behind the new `spend-index` feature) `WalletRead::transaction_data_requests`
   emits `TransactionDataRequest::GetSpendingTx` for transparent spend
   detection instead of `TransactionDataRequest::TransactionsInvolvingAddress`.
@@ -115,6 +134,10 @@ workspace.
   received at the address — moves to the deriving account, since successful derivation
   establishes that account's ownership of the address. Funds received at such an address
   become spendable once the account derives it.
+- Importing a standalone transparent pubkey whose receiver address is already recorded (for
+  example because it was derived as an account receiver) is now a no-op instead of failing on
+  the transparent-receiver uniqueness invariant added in this release. This is the
+  import-direction counterpart of the derivation-side fix above.
 
 ## [0.21.1] - 2026-06-19
 

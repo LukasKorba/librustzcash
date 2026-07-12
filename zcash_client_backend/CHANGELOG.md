@@ -11,6 +11,48 @@ workspace.
 ## [0.24.0] - PLANNED
 
 ### Added
+- `zcash_client_backend::data_api::ll::wallet::put_blocks_rows` (with the
+  `PutBlocksRows` result type and the `PutBlocksRowsDbT` trait alias): the
+  row-writing stage of `put_blocks`, extracted as a public function over
+  `LowLevelWalletWrite` so that wallet stores that maintain their note
+  commitment trees by other means can reuse it without also implementing
+  `WalletCommitmentTrees`. `put_blocks` is now expressed as `put_blocks_rows`
+  followed by the note commitment tree updates.
+- `zcash_client_backend::data_api::ll::wallet::NULLIFIER_MAP_RETENTION_BLOCKS`, the
+  trailing window of blocks whose nullifier-map entries `put_blocks_rows` always
+  inserts.
+
+### Changed
+- `zcash_client_backend::data_api::ll::LowLevelWalletRead` has an added
+  `block_fully_scanned_height` method, returning the height to which the wallet
+  has been fully scanned.
+- `zcash_client_backend::data_api::ll::wallet::put_blocks_rows` (and therefore
+  `put_blocks`) now skips nullifier-map insertion for entries it can prove are
+  unobservable: when a batch extends the wallet's contiguous fully-scanned
+  frontier, only the trailing `NULLIFIER_MAP_RETENTION_BLOCKS` blocks' nullifiers
+  are inserted. The nullifier map exists to detect spends observed before the
+  corresponding note's block has been scanned, which cannot occur below a
+  contiguous frontier; out-of-order scan ranges are unaffected and continue to
+  track the nullifiers of every block.
+- The helper functions used by the note commitment tree stage of `put_blocks`
+  are now `pub`, so that alternative `ShardStore`-backed stores can reuse the
+  exact tree-update logic: `zcash_client_backend::data_api::ll::wallet::`
+  `{build_subtrees, checkpoint_positions, ensure_checkpoints,
+  cross_pool_ensure_heights, update_tree}`.
+- `zcash_client_backend::data_api::WalletWrite::import_standalone_transparent_pubkeys`
+  (behind the `transparent-key-import` feature flag), a batch variant of
+  `import_standalone_transparent_pubkey` that lets implementations validate the
+  target account once for the whole batch. The default implementation imports
+  each pubkey individually.
+- `zcash_client_backend::data_api::WalletCommitmentTrees::put_sapling_shards`
+  (and `put_orchard_shards` / `put_ironwood_shards` under the `orchard`
+  feature): provided methods that bulk-write a batch of note commitment tree
+  changes — shards, an optional replacement tree cap, and a checkpoint delta —
+  to the backing store, for wallet stores that maintain their note commitment
+  trees outside the backing store (e.g. in memory) and flush in batches. The
+  default implementations apply the changes through the corresponding
+  `with_*_tree_mut` methods, so existing implementations of the trait are
+  unaffected.
 - `zcash_client_backend::proposal::Proposal::proposed_version` and
   `with_proposed_version`. The transaction version requested when a proposal is
   constructed is now recorded on the proposal (and preserved across
@@ -90,8 +132,42 @@ workspace.
   Ironwood note commitment tree from a subtree-root source. It defaults to a
   no-op for backends that do not track an Ironwood tree, mirroring
   `with_ironwood_tree_mut`.
+- `zcash_client_backend::data_api::WalletSummary::next_ironwood_subtree_index`,
+  the Ironwood counterpart of `next_orchard_subtree_index`. `WalletSummary::new`
+  now also takes the next Ironwood subtree index when the `orchard` feature is
+  enabled.
 - `zcash_client_backend::data_api::IRONWOOD_SHARD_HEIGHT`, the shard height of
   the Ironwood note commitment tree (equal to the Orchard shard height).
+- `zcash_client_backend::fees::TransparentChangePolicy` (behind the
+  `transparent-inputs` feature flag): expresses whether change for a
+  transaction whose net flows are fully transparent should be shielded (the
+  default, `ShieldChange`) or returned to the transparent pool
+  (`TransparentChangeAllowed`) at an internal-scope (change) transparent
+  address of the wallet, as described under the BIP 44 `change` path level.
+  The policy has no effect on transactions that involve any shielded flows;
+  change for such transactions is always shielded. This enables `zallet` to
+  replicate `zcashd`'s `z_sendmany` behavior for fully-transparent spends.
+- `with_transparent_change_policy` builder methods (behind
+  `transparent-inputs`) on the ZIP 317 change strategies
+  `zcash_client_backend::fees::zip317::{SingleOutputChangeStrategy, MultiOutputChangeStrategy}`
+  and on `zcash_client_backend::fees::fixed::SingleOutputChangeStrategy`.
+  When transparent change is produced it is always emitted as a single
+  output; the `SplitPolicy` configured for `MultiOutputChangeStrategy`
+  applies only to shielded change.
+- `zcash_client_backend::fees::ChangeValue::transparent` (behind
+  `transparent-inputs`): constructs a non-ephemeral transparent change value,
+  distinct from the ephemeral (ZIP 320) transparent output value constructed
+  by `ChangeValue::ephemeral_transparent`. In the proposal protobuf encoding,
+  such a change value is represented by the existing transparent `valuePool`
+  with `isEphemeral` unset; decoding this combination previously returned
+  `ProposalDecodingError::InvalidChangeRecipient`.
+- `zcash_client_backend::data_api::WalletWrite::reserve_next_n_internal_addresses`
+  (behind `transparent-inputs`): reserves the next `n` available
+  internal-scope (change) transparent addresses for an account, parallel to
+  the existing `reserve_next_n_ephemeral_addresses` method.
+  `create_proposed_transactions` uses this to allocate the recipient
+  address(es) for non-ephemeral transparent change outputs, which it records
+  using the existing `Recipient::InternalTransparent` variant.
 - `zcash_client_backend::data_api::NoteCommitmentTree`
 - `zcash_client_backend::data_api::SentTransactionOutput::note_commitment_tree`
 - `zcash_client_backend::proto::proposal::ValuePool::Ironwood`, so that a proposal
@@ -235,6 +311,12 @@ workspace.
   this option must be executed with a matching unpadded builder configuration.
 
 ### Changed
+- `zcash_client_backend::wallet::Recipient::InternalAccount` has been renamed
+  to `Recipient::InternalShielded`, for symmetry with `Recipient::InternalTransparent`
+  and to clarify that the distinguishing feature of this variant is that its
+  payload is a shielded note, not that it is somehow more "the account" than the
+  other internal variant.
+- MSRV is now 1.88
 - `zcash_client_backend::data_api::wallet::create_pczt_from_proposal` now takes an
   `orchard_pool_bundle_type` argument (behind the `pczt` feature flag) selecting
   the transactional bundle type for the Orchard and Ironwood bundles; it must
@@ -256,10 +338,11 @@ workspace.
   Ironwood. Orchard-pool change is still routed into the Ironwood bundle when the
   transaction spends no Orchard notes (e.g. an Orchard-receiver payment funded
   from the Sapling and Ironwood pools).
-- Migrated to `lightwallet-protocol v0.5.0`, `zcash_protocol 0.10.0-pre.0`,
-  `zcash_address 0.13.0-pre.0`, `zcash_transparent 0.9.0-pre.0`,
-  `zcash_keys 0.15.0-pre.0`, `zcash_primitives 0.29.0-pre.0`,
-  `zcash_proofs 0.29.0-pre.0`. The `lightwallet-protocol v0.5.0` migration
+- Migrated to `orchard 0.15`, `shardtree 0.7`.
+- Migrated to `lightwallet-protocol v0.5.0`, `zcash_protocol 0.10.0`,
+  `zcash_address 0.13.0`, `zcash_transparent 0.9.0`,
+  `zcash_keys 0.15.0`, `zcash_primitives 0.29.0`,
+  `zcash_proofs 0.29.0`. The `lightwallet-protocol v0.5.0` migration
   changes `zcash_client_backend::proto`:
   - Adds the `service::PoolType::Ironwood` and `service::ShieldedProtocol::Ironwood`
     variants.
